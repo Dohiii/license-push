@@ -1,0 +1,86 @@
+name: Compile license-tool
+
+on:
+  push:
+    branches:
+      - 'main'
+    # Will not perform jobs unless files outside license-download-tool folder are changed.
+    paths-ignore:
+      - 'license-download-tool/**'
+
+  pull_request:
+    branches:
+      - 'main'
+    # Will not perform jobs unless files outside license-download-tool folder are changed.
+    paths-ignore:
+      - 'license-download-tool/**'
+
+
+jobs:
+    Versioning:
+      outputs:
+          version: ${{ steps.version.outputs.version }}
+          newver: ${{steps.newver.outputs.newver}}
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v3.5.3
+          with:
+            fetch-depth: 0
+
+        - name: Generate version
+          id: version
+          uses: codacy/git-version@2.5.4
+          with:
+            release-branch: main
+
+        - name: Create the tag
+          uses: thejeff77/action-push-tag@v1.0.0
+          with:
+            tag: ${{steps.version.outputs.VERSION}}
+
+        - name: Create a tag without symbols and letters for pyinstaller.
+          id: newver
+          run: |
+            export NEWVER=$(echo "${{ steps.version.outputs.version }}" | awk -F'-' '{print $1}')
+            echo "newver=$NEWVER" >> $GITHUB_OUTPUT
+  
+
+    WindowsCompilation:
+      runs-on: windows-latest
+      needs: Versioning
+      steps:
+        - uses: actions/checkout@v3.5.3
+        - name: Set up Python 3.10
+          uses: actions/setup-python@v4
+          with:
+            python-version: 3.10
+
+        - name: Install PyInstaller
+          run: pip install -U pyinstaller
+
+        - name: Install reqs
+          run: pip install -r requirements.txt
+        # In order to have the program version in the exe, it needs pyinstaller_versionfile
+        - name: Install pyinstaller_versionfile
+          run: pip install -U pyinstaller_versionfile
+
+        - name: Generate version file
+          run: create-version-file compile/version.yml --outfile compile/version.txt --version ${{needs.Versioning.outputs.newver}}
+
+        - name: Build with pyinstaller for Windows
+          run: pyinstaller --clean -F --version-file version.txt -i Graphics/Solstice.ico --specpath compile/ src/license-tool.py
+
+        - name: Create Zip
+          id: zip
+          run: |
+            echo "::set-output name=zipfile::license-tool-${{needs.Versioning.outputs.version}}.zip"
+            7z a license-tool-${{needs.Versioning.outputs.version}}.zip dist/license-tool.exe
+
+        - name: Deploy to Artifactory
+          uses: fjogeleit/http-request-action@v1
+          with:
+            url: 'https://artifactory.mersive.xyz/artifactory/ci-mersive-license-tool/${{steps.zip.outputs.zipfile}}'
+            method: 'PUT'
+            username: ${{ secrets.ARTIFACTORY_USER }}
+            password: ${{ secrets.ARTIFACTORY_PWD }}
+            file: "${{steps.zip.outputs.zipfile}}"
